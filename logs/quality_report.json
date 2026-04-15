@@ -1,0 +1,60 @@
+{
+  "generated_at": "2026-04-15T16:29:08.467156+00:00",
+  "source": "data/raw/transactions.csv",
+  "rows_input": 5,
+  "rows_output": 5,
+  "checks_passed": 10,
+  "checks_total": 10,
+  "checks": [
+    {
+      "check": "required_columns_present",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "check": "no_duplicate_transaction_ids",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "check": "amount_positive",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "check": "amount_realistic_range",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "check": "is_anomaly_binary",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "check": "no_nulls_in_key_columns",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "check": "timestamp_parseable",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "check": "category_non_empty",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "check": "merchant_id_non_null",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "check": "both_classes_present",
+      "passed": true,
+      "detail": "normal=3 anomaly=2"
+    }
+  ]
+}
