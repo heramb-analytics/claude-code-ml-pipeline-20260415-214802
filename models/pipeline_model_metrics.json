@@ -1,6 +1,11 @@
 {
-  "algorithm": "XGBoostClassifier",
-  "trained_at": "2026-04-15T16:31:07.296468+00:00",
+  "trained_at": "2026-04-15T21:02:00.472920+00:00",
+  "algorithm": "IsolationForest",
+  "best_params": {
+    "n_estimators": 50,
+    "max_samples": "auto",
+    "contamination": 0.1
+  },
   "feature_columns": [
     "hour_of_day",
     "day_of_week",
@@ -12,17 +17,12 @@
     "category_encoded",
     "merchant_txn_count"
   ],
-  "best_params": {
-    "n_estimators": 150,
-    "max_depth": 4,
-    "learning_rate": 0.05
+  "metrics": {
+    "precision": 1.0,
+    "recall": 0.5,
+    "f1_score": 0.6666666666666666,
+    "roc_auc": 0.8333333333333334
   },
-  "train_size": 5,
-  "val_size": 5,
-  "test_size": 5,
-  "accuracy": 0.6,
-  "f1_score": 0.0,
-  "precision": 0.0,
-  "recall": 0.0,
-  "roc_auc": 0.5
+  "train_rows": 5,
+  "anomaly_rate": 0.4
 }

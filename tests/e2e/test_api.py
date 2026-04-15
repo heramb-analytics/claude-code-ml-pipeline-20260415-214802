@@ -72,7 +72,7 @@ def test_05_metrics_endpoint(page: Page) -> None:
     print("   📸 Taking screenshot 5/6: 05_metrics_endpoint.png...")
     page.goto(f"{BASE_URL}/metrics")
     content = page.content()
-    assert "accuracy" in content, "accuracy key not found in /metrics response"
+    assert "algorithm" in content, "algorithm key not found in /metrics response"
     _save(page, "05_metrics_endpoint.png")
 
 

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -20,17 +21,18 @@ app = FastAPI(title="Transaction Anomaly Detection API", version="1.0.0")
 
 # In-memory store for last 10 predictions
 _recent_predictions: deque = deque(maxlen=10)
-_model = None
+_clf = None
 _metrics: dict = {}
 _feature_cols: list = []
 
 
 def _load_model() -> None:
-    """Load model and metadata into module-level globals."""
-    global _model, _metrics, _feature_cols
-    _model = pickle.loads(MODEL_PATH.read_bytes())
+    """Load model bundle and metadata into module-level globals."""
+    global _clf, _metrics, _feature_cols
+    bundle = pickle.loads(MODEL_PATH.read_bytes())
+    _clf = bundle["model"]
+    _feature_cols = bundle["feature_cols"]
     _metrics = json.loads(METRICS_PATH.read_text())
-    _feature_cols = json.loads(SCHEMA_PATH.read_text())["feature_columns"]
 
 
 @app.on_event("startup")
@@ -73,22 +75,30 @@ async def predict(req: PredictRequest) -> PredictResponse:
     Returns:
         Prediction result with label and confidence score.
     """
-    if _model is None:
+    if _clf is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
-    features = [[getattr(req, col) for col in _feature_cols]]
-    pred = int(_model.predict(features)[0])
-    proba = float(_model.predict_proba(features)[0][pred])
-    label = "ANOMALY" if pred == 1 else "NORMAL"
+    features = np.array([[getattr(req, col) for col in _feature_cols]])
+    # IsolationForest: -1 = anomaly, 1 = normal
+    raw_pred = int(_clf.predict(features)[0])
+    prediction = 1 if raw_pred == -1 else 0
+    label = "ANOMALY" if prediction == 1 else "NORMAL"
+
+    # Compute confidence from anomaly score (normalised to [0,1])
+    score = float(_clf.score_samples(features)[0])
+    all_scores = _clf.score_samples(features)
+    # Use decision_function threshold as confidence proxy
+    confidence = round(abs(score) / (abs(score) + 1), 4)
+
     request_id = str(uuid.uuid4())[:8]
     ts = datetime.now(timezone.utc).isoformat()
 
     result = PredictResponse(
         request_id=request_id,
         timestamp=ts,
-        prediction=pred,
+        prediction=prediction,
         label=label,
-        confidence=round(proba, 4),
+        confidence=confidence,
     )
     _recent_predictions.appendleft(result.model_dump())
     return result
@@ -96,35 +106,23 @@ async def predict(req: PredictRequest) -> PredictResponse:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    """Return service health status.
-
-    Returns:
-        Health status dict.
-    """
+    """Return service health status."""
     return {
         "status": "ok",
-        "model_loaded": _model is not None,
+        "model_loaded": _clf is not None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
 @app.get("/metrics")
-async def metrics() -> dict[str, Any]:
-    """Return model metrics.
-
-    Returns:
-        Metrics dict loaded from models/pipeline_model_metrics.json.
-    """
+async def metrics_endpoint() -> dict[str, Any]:
+    """Return model metrics."""
     return _metrics
 
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard() -> HTMLResponse:
-    """Serve the HTML prediction dashboard.
-
-    Returns:
-        HTML response with the interactive dashboard.
-    """
+    """Serve the HTML prediction dashboard."""
     recent_rows = ""
     for p in list(_recent_predictions):
         badge_class = "bg-red-100 text-red-800" if p["prediction"] == 1 else "bg-green-100 text-green-800"
@@ -137,6 +135,11 @@ async def dashboard() -> HTMLResponse:
         </tr>"""
 
     m = _metrics
+    inner_m = m.get("metrics", {})
+    f1 = inner_m.get("f1_score", 0)
+    roc_auc = inner_m.get("roc_auc", 0)
+    algorithm = m.get("algorithm", "—")
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -165,15 +168,15 @@ async def dashboard() -> HTMLResponse:
     <section class="grid grid-cols-3 gap-4">
       <div class="bg-white rounded-xl shadow p-5 text-center">
         <p class="text-xs text-gray-500 uppercase font-semibold">Algorithm</p>
-        <p class="text-lg font-bold text-blue-700 mt-1">{m.get('algorithm','—').replace('Classifier','')}</p>
+        <p class="text-lg font-bold text-blue-700 mt-1">{algorithm}</p>
       </div>
       <div class="bg-white rounded-xl shadow p-5 text-center">
-        <p class="text-xs text-gray-500 uppercase font-semibold">Accuracy</p>
-        <p class="text-2xl font-bold text-green-600 mt-1">{m.get('accuracy', 0):.1%}</p>
+        <p class="text-xs text-gray-500 uppercase font-semibold">F1 Score</p>
+        <p class="text-2xl font-bold text-green-600 mt-1">{f1:.2f}</p>
       </div>
       <div class="bg-white rounded-xl shadow p-5 text-center">
         <p class="text-xs text-gray-500 uppercase font-semibold">ROC-AUC</p>
-        <p class="text-2xl font-bold text-purple-600 mt-1">{m.get('roc_auc', 0):.2f}</p>
+        <p class="text-2xl font-bold text-purple-600 mt-1">{roc_auc:.2f}</p>
       </div>
     </section>
 
@@ -247,7 +250,6 @@ async def dashboard() -> HTMLResponse:
   </main>
 
   <script>
-    // Health check polling
     async function checkHealth() {{
       try {{
         const r = await fetch('/health');
@@ -266,7 +268,6 @@ async def dashboard() -> HTMLResponse:
     checkHealth();
     setInterval(checkHealth, 5000);
 
-    // Prediction form
     document.getElementById('predict-form').addEventListener('submit', async (e) => {{
       e.preventDefault();
       const fd = new FormData(e.target);
@@ -290,7 +291,6 @@ async def dashboard() -> HTMLResponse:
       document.getElementById('confidence-val').textContent = (d.confidence * 100).toFixed(1) + '%';
       document.getElementById('request-id').textContent = d.request_id;
 
-      // Prepend to table
       const tbody = document.getElementById('predictions-table');
       const badgeCls = d.prediction === 1 ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800';
       const row = `<tr class="border-b">
