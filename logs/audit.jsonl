@@ -1,1 +1,6 @@
 {"stage": "ingest", "rows": 5, "checks_passed": 10, "timestamp": "2026-04-16T11:21:30.595451+00:00"}
+{"job": "nightly_retrain", "status": "started", "timestamp": "2026-04-16T11:37:52.859350+00:00"}
+{"job": "nightly_retrain", "status": "skipped", "rows": 5, "threshold": 500, "timestamp": "2026-04-16T11:37:52.863213+00:00"}
+{"job": "drift_check", "status": "started", "timestamp": "2026-04-16T11:37:52.863322+00:00"}
+{"job": "drift_check", "status": "drift_detected", "baseline_rate": 0.2, "current_rate": 0.4, "deviation_pct": 100.0, "timestamp": "2026-04-16T11:37:52.904267+00:00"}
+{"job": "drift_check", "action": "jira_ticket_requested", "summary": "[DRIFT ALERT] Anomaly rate deviation 100.0% detected", "baseline_rate": 0.2, "current_rate": 0.4, "deviation_pct": 100.0, "project": "TAD", "priority": "High", "detected_at": "2026-04-16T11:37:52.904354+00:00", "timestamp": "2026-04-16T11:37:52.904401+00:00"}

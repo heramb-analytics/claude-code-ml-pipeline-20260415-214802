@@ -7,161 +7,208 @@ Job 2 @ every 6h     — drift check, create JIRA ticket if anomaly rate deviate
 import json
 import logging
 import pickle
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
+import numpy as np
+import pandas as pd
+import schedule
+import time
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s — %(levelname)s — %(message)s",
+)
 logger = logging.getLogger(__name__)
 
-RAW_PATH = Path("data/raw")
-CLEAN_PATH = Path("data/processed/clean.parquet")
+RAW_DIR = Path("data/raw")
+PROCESSED_DIR = Path("data/processed")
 MODEL_PATH = Path("models/pipeline_model.pkl")
 METRICS_PATH = Path("models/pipeline_model_metrics.json")
 AUDIT_LOG = Path("logs/audit.jsonl")
 
+# Baseline anomaly rate (from training data)
+BASELINE_ANOMALY_RATE: float | None = None
 
-def _append_audit(event: str, detail: dict) -> None:
-    """Append a JSON Lines entry to the audit log.
+
+def _log(event: dict) -> None:
+    """Append event to audit.jsonl.
 
     Args:
-        event: Event name.
-        detail: Additional fields to log.
+        event: Dictionary to log.
     """
     AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
-    entry = {"ts": datetime.now(timezone.utc).isoformat(), "event": event, **detail}
-    with AUDIT_LOG.open("a") as f:
-        f.write(json.dumps(entry) + "\n")
+    with open(AUDIT_LOG, "a") as f:
+        f.write(json.dumps({**event, "timestamp": datetime.now(timezone.utc).isoformat()}) + "\n")
+    logger.info(json.dumps(event))
 
 
-def retrain_if_new_data() -> None:
-    """Job 1: Validate new raw data and retrain the model if >500 new rows found.
+def _load_baseline_anomaly_rate() -> float:
+    """Load baseline anomaly rate from training metrics.
 
-    Scans data/raw/ for CSV files added since last run.
-    If combined new rows exceed 500, triggers full pipeline retraining.
+    Returns:
+        Baseline anomaly rate as float.
     """
-    logger.info("[Job 1] Starting nightly retrain check...")
-    try:
-        import pandas as pd
-        csv_files = list(RAW_PATH.glob("*.csv"))
-        total_rows = sum(len(pd.read_csv(f)) for f in csv_files)
-        logger.info("[Job 1] Total rows in data/raw: %d", total_rows)
-
-        if total_rows > 500:
-            logger.info("[Job 1] >500 rows detected — triggering retrain...")
-            from src.data.ingest import ingest
-            from src.features.engineer import run as engineer_run
-            from src.models.pipeline_model import train
-
-            ingest()
-            engineer_run()
-            metrics = train()
-            logger.info("[Job 1] Retrain complete. Accuracy: %.4f", metrics["accuracy"])
-            _append_audit("retrain_complete", {"rows": total_rows, "accuracy": metrics["accuracy"]})
-        else:
-            logger.info("[Job 1] Row count below threshold (%d ≤ 500) — skipping retrain.", total_rows)
-            _append_audit("retrain_skipped", {"rows": total_rows, "reason": "below_threshold"})
-
-    except Exception as exc:
-        logger.error("[Job 1] Retrain check failed: %s", exc)
-        _append_audit("retrain_error", {"error": str(exc)})
+    if METRICS_PATH.exists():
+        with open(METRICS_PATH) as f:
+            m = json.load(f)
+        return m.get("baseline_anomaly_rate", 0.2)
+    return 0.2
 
 
-def drift_check() -> None:
-    """Job 2: Compare current anomaly rate against baseline and alert if deviation >20%.
+def job_nightly_retrain() -> None:
+    """Job 1 — Run at 02:00 daily.
 
-    Loads the model, scores the current clean dataset, compares anomaly rate
-    against the trained baseline. If drift >20% (absolute), logs a warning.
-    In a production setup this would create a JIRA ticket via MCP.
+    Validate new data and retrain if >500 new rows detected.
     """
-    logger.info("[Job 2] Starting drift check...")
-    try:
-        import pandas as pd
-        from src.features.engineer import engineer_features
+    logger.info("🔄 Job 1: Nightly retrain check starting...")
+    _log({"job": "nightly_retrain", "status": "started"})
 
-        if not CLEAN_PATH.exists():
-            logger.warning("[Job 2] clean.parquet not found — skipping drift check.")
-            return
+    # Count new rows across all CSV files in data/raw/
+    total_rows = 0
+    for csv_file in RAW_DIR.glob("*.csv"):
+        try:
+            df = pd.read_csv(csv_file)
+            total_rows += len(df)
+        except Exception as e:
+            logger.warning(f"Could not read {csv_file}: {e}")
 
-        if not MODEL_PATH.exists():
-            logger.warning("[Job 2] Model not found — skipping drift check.")
-            return
+    logger.info(f"   📊 Total rows in raw data: {total_rows}")
 
-        metrics = json.loads(METRICS_PATH.read_text())
-        model = pickle.loads(MODEL_PATH.read_bytes())
-        df_clean = pd.read_parquet(CLEAN_PATH)
-
-        feature_cols = metrics.get("feature_columns", [])
-        df_feat = engineer_features(df_clean)
-        X = df_feat[feature_cols].values
-        preds = model.predict(X)
-
-        current_rate = float(preds.mean())
-        baseline_rate = float(df_clean["is_anomaly"].mean())
-        deviation = abs(current_rate - baseline_rate)
-
-        logger.info(
-            "[Job 2] Baseline anomaly rate: %.2f%%  Current: %.2f%%  Deviation: %.2f%%",
-            baseline_rate * 100, current_rate * 100, deviation * 100,
-        )
-
-        if deviation > 0.20:
-            logger.warning(
-                "[Job 2] DRIFT ALERT — anomaly rate deviation %.1f%% exceeds 20%% threshold. "
-                "Create JIRA ticket via: claude mcp jira_create_issue",
-                deviation * 100,
+    if total_rows > 500:
+        logger.info(f"   🚀 {total_rows} rows detected — triggering retrain...")
+        try:
+            result = subprocess.run(
+                ["python3", "src/data/ingest.py"],
+                capture_output=True, text=True, timeout=120
             )
-            _append_audit("drift_alert", {
-                "baseline_rate": baseline_rate,
-                "current_rate": current_rate,
-                "deviation": deviation,
-                "alert": True,
-            })
-        else:
-            logger.info("[Job 2] Drift within acceptable range.")
-            _append_audit("drift_ok", {
-                "baseline_rate": baseline_rate,
-                "current_rate": current_rate,
-                "deviation": deviation,
-            })
-
-    except Exception as exc:
-        logger.error("[Job 2] Drift check failed: %s", exc)
-        _append_audit("drift_error", {"error": str(exc)})
+            if result.returncode == 0:
+                subprocess.run(["python3", "src/features/engineer.py"], timeout=120)
+                subprocess.run(["python3", "src/models/train.py"], timeout=300)
+                _log({"job": "nightly_retrain", "status": "retrained", "rows": total_rows})
+                logger.info("   ✅ Retrain complete")
+            else:
+                _log({"job": "nightly_retrain", "status": "failed", "error": result.stderr})
+                logger.error(f"   ❌ Retrain failed: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            _log({"job": "nightly_retrain", "status": "timeout"})
+            logger.error("   ❌ Retrain timed out")
+    else:
+        logger.info(f"   ℹ️  Only {total_rows} rows — threshold not met (>500 required), skipping retrain")
+        _log({"job": "nightly_retrain", "status": "skipped", "rows": total_rows, "threshold": 500})
 
 
-def start() -> None:
-    """Start the blocking scheduler with both jobs configured."""
-    scheduler = BlockingScheduler(timezone="UTC")
+def job_drift_check() -> None:
+    """Job 2 — Run every 6 hours.
 
-    # Job 1 — retrain at 02:00 UTC daily
-    scheduler.add_job(
-        retrain_if_new_data,
-        trigger=CronTrigger(hour=2, minute=0),
-        id="nightly_retrain",
-        name="Nightly retrain (02:00 UTC)",
-        misfire_grace_time=3600,
-    )
+    Compare current anomaly rate vs baseline. Create JIRA ticket if deviation >20%.
+    """
+    global BASELINE_ANOMALY_RATE
+    logger.info("📡 Job 2: Drift check starting...")
+    _log({"job": "drift_check", "status": "started"})
 
-    # Job 2 — drift check every 6 hours
-    scheduler.add_job(
-        drift_check,
-        trigger=IntervalTrigger(hours=6),
-        id="drift_check",
-        name="Drift check (every 6h)",
-        misfire_grace_time=600,
-    )
+    if BASELINE_ANOMALY_RATE is None:
+        BASELINE_ANOMALY_RATE = _load_baseline_anomaly_rate()
 
-    logger.info("Scheduler started — retrain @ 02:00 UTC daily · drift check every 6h")
-    logger.info("Press Ctrl+C to stop.")
-    try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Scheduler stopped.")
+    # Load latest predictions from clean data
+    clean_path = PROCESSED_DIR / "clean.parquet"
+    if not clean_path.exists():
+        logger.warning("   ⚠️  clean.parquet not found — skipping drift check")
+        _log({"job": "drift_check", "status": "skipped", "reason": "no_data"})
+        return
+
+    df = pd.read_parquet(clean_path)
+    if "is_anomaly" not in df.columns or len(df) == 0:
+        _log({"job": "drift_check", "status": "skipped", "reason": "no_labels"})
+        return
+
+    current_rate = float(df["is_anomaly"].mean())
+    baseline = BASELINE_ANOMALY_RATE
+    deviation = abs(current_rate - baseline) / max(baseline, 1e-9)
+
+    logger.info(f"   📊 Baseline anomaly rate: {baseline:.4f}")
+    logger.info(f"   📊 Current anomaly rate:  {current_rate:.4f}")
+    logger.info(f"   📊 Deviation:             {deviation:.2%}")
+
+    if deviation > 0.20:
+        logger.warning(f"   ⚠️  DRIFT DETECTED — deviation {deviation:.2%} > 20% threshold!")
+        _log({
+            "job": "drift_check",
+            "status": "drift_detected",
+            "baseline_rate": baseline,
+            "current_rate": current_rate,
+            "deviation_pct": round(deviation * 100, 2),
+        })
+        _create_drift_jira_ticket(baseline, current_rate, deviation)
+    else:
+        logger.info("   ✅ No significant drift detected")
+        _log({
+            "job": "drift_check",
+            "status": "ok",
+            "baseline_rate": baseline,
+            "current_rate": current_rate,
+            "deviation_pct": round(deviation * 100, 2),
+        })
+
+
+def _create_drift_jira_ticket(
+    baseline: float, current_rate: float, deviation: float
+) -> None:
+    """Create a JIRA ticket when anomaly rate drifts >20%.
+
+    Args:
+        baseline: Baseline anomaly rate from training.
+        current_rate: Current observed anomaly rate.
+        deviation: Relative deviation as a fraction.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    summary = f"[DRIFT ALERT] Anomaly rate deviation {deviation:.1%} detected"
+    logger.info(f"   🎫 Creating JIRA ticket: {summary}")
+    # JIRA ticket creation would use the MCP tool in production
+    # Here we log the intent so it can be picked up by the monitoring system
+    _log({
+        "job": "drift_check",
+        "action": "jira_ticket_requested",
+        "summary": summary,
+        "baseline_rate": baseline,
+        "current_rate": current_rate,
+        "deviation_pct": round(deviation * 100, 2),
+        "project": "TAD",
+        "priority": "High",
+        "detected_at": now,
+    })
+    logger.info("   ✅ JIRA drift ticket logged to audit.jsonl")
+
+
+def run_scheduler() -> None:
+    """Configure and start the scheduler with both jobs."""
+    global BASELINE_ANOMALY_RATE
+    BASELINE_ANOMALY_RATE = _load_baseline_anomaly_rate()
+
+    # Job 1: Nightly retrain at 02:00
+    schedule.every().day.at("02:00").do(job_nightly_retrain)
+
+    # Job 2: Drift check every 6 hours
+    schedule.every(6).hours.do(job_drift_check)
+
+    logger.info("⏰ Scheduler started:")
+    logger.info("   Job 1: Nightly retrain @ 02:00 daily")
+    logger.info("   Job 2: Drift check every 6 hours")
+
+    _log({"event": "scheduler_started", "jobs": ["nightly_retrain@02:00", "drift_check@6h"]})
+
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
 
 
 if __name__ == "__main__":
-    start()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        # Run both jobs once for testing
+        logger.info("Running jobs in test mode...")
+        job_nightly_retrain()
+        job_drift_check()
+    else:
+        run_scheduler()
