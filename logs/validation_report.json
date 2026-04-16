@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-04-16T11:22:47.976269+00:00",
+  "timestamp": "2026-04-16T12:47:19.723027+00:00",
   "checks_passed": 12,
   "checks_total": 12,
   "results": [
@@ -7,13 +7,13 @@
       "check": 1,
       "name": "clean_parquet_not_empty",
       "passed": true,
-      "detail": "5 rows"
+      "detail": "1000 rows"
     },
     {
       "check": 2,
       "name": "features_row_count_matches",
       "passed": true,
-      "detail": "clean=5, features=5"
+      "detail": "clean=1000, features=1000"
     },
     {
       "check": 3,

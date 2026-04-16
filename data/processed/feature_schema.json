@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-04-16T11:22:39.539203+00:00",
-  "total_features": 16,
+  "timestamp": "2026-04-16T12:47:14.912380+00:00",
+  "total_features": 19,
   "feature_columns": [
     "amount",
     "hour_of_day",
@@ -13,8 +13,11 @@
     "is_large_txn",
     "is_round_amount",
     "cat_electronics",
+    "cat_entertainment",
     "cat_food",
+    "cat_healthcare",
     "cat_retail",
+    "cat_travel",
     "merchant_txn_count",
     "amount_vs_merchant_avg",
     "hour_txn_volume"
@@ -36,11 +39,14 @@
     "is_large_txn",
     "is_round_amount",
     "cat_electronics",
+    "cat_entertainment",
     "cat_food",
+    "cat_healthcare",
     "cat_retail",
+    "cat_travel",
     "merchant_txn_count",
     "amount_vs_merchant_avg",
     "hour_txn_volume"
   ],
-  "rows": 5
+  "rows": 1000
 }

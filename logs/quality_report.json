@@ -1,8 +1,8 @@
 {
-  "timestamp": "2026-04-16T11:21:30.595025+00:00",
-  "source_file": "data/raw/transactions.csv",
-  "output_file": "data/processed/clean.parquet",
-  "rows_ingested": 5,
+  "timestamp": "2026-04-16T12:46:57.990683+00:00",
+  "source_file": "/Users/heramb/Desktop/claude-pipeline-20260415-214037-v2/data/raw/transactions.csv",
+  "output_file": "/Users/heramb/Desktop/claude-pipeline-20260415-214037-v2/data/processed/clean.parquet",
+  "rows_ingested": 1000,
   "columns": [
     "transaction_id",
     "timestamp",
@@ -12,67 +12,63 @@
     "is_anomaly"
   ],
   "checks_passed": 10,
-  "checks_total": 10,
+  "checks_total": 11,
   "results": [
     {
       "check": 1,
-      "name": "file_not_empty",
-      "passed": true,
-      "fix": ""
+      "name": "non_empty_dataframe",
+      "status": "passed"
     },
     {
       "check": 2,
       "name": "required_columns_present",
-      "passed": true,
-      "fix": ""
+      "status": "passed"
     },
     {
       "check": 3,
       "name": "no_duplicate_transaction_ids",
-      "passed": true,
-      "fix": ""
+      "status": "passed"
     },
     {
       "check": 4,
-      "name": "amount_non_negative",
-      "passed": true,
-      "fix": ""
+      "name": "amount_positive",
+      "status": "passed"
     },
     {
       "check": 5,
       "name": "no_null_amounts",
-      "passed": true,
-      "fix": ""
+      "status": "passed"
     },
     {
       "check": 6,
       "name": "is_anomaly_binary",
-      "passed": true,
-      "fix": ""
+      "status": "passed"
     },
     {
       "check": 7,
-      "name": "timestamp_parseable",
-      "passed": true,
-      "fix": ""
+      "name": "timestamp_valid_datetime",
+      "status": "fixed",
+      "fix": "parsing timestamp column to datetime"
+    },
+    {
+      "check": 7,
+      "name": "timestamp_valid_datetime",
+      "status": "passed"
     },
     {
       "check": 8,
       "name": "no_null_categories",
-      "passed": true,
-      "fix": ""
+      "status": "passed"
     },
     {
       "check": 9,
-      "name": "amount_reasonable_range",
-      "passed": true,
-      "fix": ""
+      "name": "amount_within_range",
+      "status": "passed"
     },
     {
       "check": 10,
-      "name": "anomaly_rate_plausible",
-      "passed": true,
-      "fix": ""
+      "name": "anomaly_rate_sensible",
+      "status": "passed"
     }
   ]
 }
