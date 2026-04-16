@@ -5,3 +5,8 @@
 {"job": "drift_check", "status": "drift_detected", "baseline_rate": 0.2, "current_rate": 0.4, "deviation_pct": 100.0, "timestamp": "2026-04-16T11:37:52.904267+00:00"}
 {"job": "drift_check", "action": "jira_ticket_requested", "summary": "[DRIFT ALERT] Anomaly rate deviation 100.0% detected", "baseline_rate": 0.2, "current_rate": 0.4, "deviation_pct": 100.0, "project": "TAD", "priority": "High", "detected_at": "2026-04-16T11:37:52.904354+00:00", "timestamp": "2026-04-16T11:37:52.904401+00:00"}
 {"stage": "ingest", "rows": 1000, "checks_passed": 10, "timestamp": "2026-04-16T12:46:57.991273+00:00"}
+{"job": "nightly_retrain", "status": "started", "timestamp": "2026-04-16T12:51:43.552467+00:00"}
+{"job": "nightly_retrain", "status": "skipped", "rows": 5, "threshold": 500, "timestamp": "2026-04-16T12:51:43.556761+00:00"}
+{"job": "drift_check", "status": "started", "timestamp": "2026-04-16T12:51:43.556883+00:00"}
+{"job": "drift_check", "status": "drift_detected", "baseline_rate": 0.2, "current_rate": 0.102, "deviation_pct": 49.0, "timestamp": "2026-04-16T12:51:43.603043+00:00"}
+{"job": "drift_check", "action": "jira_ticket_requested", "summary": "[DRIFT ALERT] Anomaly rate deviation 49.0% detected", "baseline_rate": 0.2, "current_rate": 0.102, "deviation_pct": 49.0, "project": "TAD", "priority": "High", "detected_at": "2026-04-16T12:51:43.603151+00:00", "timestamp": "2026-04-16T12:51:43.603197+00:00"}
