@@ -1,9 +1,15 @@
-"""Feature engineering for transaction anomaly detection pipeline."""
+"""Feature engineering module for transaction anomaly detection.
+
+Generates numerical features from cleaned transaction data.
+"""
 
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pandas as pd
+import numpy as np
+
 
 CLEAN_PATH = Path("data/processed/clean.parquet")
 FEATURES_PATH = Path("data/processed/features.parquet")
@@ -11,87 +17,85 @@ SCHEMA_PATH = Path("data/processed/feature_schema.json")
 
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Engineer features from cleaned transaction data.
+    """Generate features from cleaned transaction DataFrame.
 
     Args:
-        df: Cleaned transaction dataframe.
+        df: Cleaned DataFrame from Stage 1.
 
     Returns:
-        Dataframe with engineered features.
+        DataFrame with engineered features.
     """
     df = df.copy()
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
 
     # Temporal features
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["hour_of_day"] = df["timestamp"].dt.hour
     df["day_of_week"] = df["timestamp"].dt.dayofweek
     df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
-    df["is_business_hours"] = df["hour_of_day"].between(9, 17).astype(int)
+    df["month"] = df["timestamp"].dt.month
 
     # Amount features
-    df["amount_log"] = df["amount"].apply(lambda x: __import__("math").log1p(x))
-    amount_mean = df["amount"].mean()
-    amount_std = df["amount"].std() if df["amount"].std() > 0 else 1.0
-    df["amount_zscore"] = (df["amount"] - amount_mean) / amount_std
-    df["is_high_value"] = (df["amount"] > df["amount"].quantile(0.75)).astype(int)
+    df["log_amount"] = np.log1p(df["amount"])
+    df["amount_zscore"] = (df["amount"] - df["amount"].mean()) / (df["amount"].std() + 1e-9)
+    df["amount_percentile"] = df["amount"].rank(pct=True)
+    df["is_large_txn"] = (df["amount"] > df["amount"].quantile(0.75)).astype(int)
+    df["is_round_amount"] = (df["amount"] % 100 == 0).astype(int)
 
-    # Category encoding
-    df["category_encoded"] = df["category"].astype("category").cat.codes
+    # Category features
+    category_dummies = pd.get_dummies(df["category"], prefix="cat").astype(int)
+    df = pd.concat([df, category_dummies], axis=1)
 
     # Merchant features
-    merchant_txn_counts = df.groupby("merchant_id")["transaction_id"].transform("count")
-    df["merchant_txn_count"] = merchant_txn_counts
+    merchant_txn_count = df.groupby("merchant_id")["transaction_id"].transform("count")
+    df["merchant_txn_count"] = merchant_txn_count
+
+    # Amount deviation from merchant average
+    merchant_avg = df.groupby("merchant_id")["amount"].transform("mean")
+    df["amount_vs_merchant_avg"] = df["amount"] - merchant_avg
+
+    # Velocity feature: transactions per hour slot
+    df["hour_txn_volume"] = df.groupby("hour_of_day")["transaction_id"].transform("count")
 
     return df
 
 
-def save_schema(df: pd.DataFrame, feature_cols: list) -> None:
-    """Save feature schema to JSON.
+def save_features(df: pd.DataFrame) -> list[str]:
+    """Save feature DataFrame and schema.
 
     Args:
-        df: Feature dataframe.
-        feature_cols: List of feature column names used for modeling.
-    """
-    schema = {
-        "feature_columns": feature_cols,
-        "dtypes": {col: str(df[col].dtype) for col in feature_cols},
-        "stats": {
-            col: {
-                "mean": float(df[col].mean()),
-                "std": float(df[col].std()),
-                "min": float(df[col].min()),
-                "max": float(df[col].max()),
-            }
-            for col in feature_cols
-            if pd.api.types.is_numeric_dtype(df[col])
-        },
-    }
-    SCHEMA_PATH.write_text(json.dumps(schema, indent=2))
-
-
-def run() -> tuple[pd.DataFrame, list]:
-    """Load clean data, engineer features, save outputs.
+        df: Feature-engineered DataFrame.
 
     Returns:
-        Tuple of (feature dataframe, feature column list).
+        List of feature column names.
     """
+    # Feature columns (exclude raw/id columns)
+    exclude = {"transaction_id", "timestamp", "merchant_id", "category", "is_anomaly"}
+    feature_cols = [c for c in df.columns if c not in exclude]
+
+    df.to_parquet(FEATURES_PATH, index=False)
+
+    schema = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "total_features": len(feature_cols),
+        "feature_columns": feature_cols,
+        "all_columns": list(df.columns),
+        "rows": len(df),
+    }
+    with open(SCHEMA_PATH, "w") as f:
+        json.dump(schema, f, indent=2)
+
+    return feature_cols
+
+
+def run() -> None:
+    """Execute feature engineering pipeline."""
     df = pd.read_parquet(CLEAN_PATH)
-    df_feat = engineer_features(df)
-
-    feature_cols = [
-        "hour_of_day", "day_of_week", "is_weekend", "is_business_hours",
-        "amount_log", "amount_zscore", "is_high_value",
-        "category_encoded", "merchant_txn_count",
-    ]
-
-    df_feat.to_parquet(FEATURES_PATH, index=False)
-    save_schema(df_feat, feature_cols)
-
-    return df_feat, feature_cols
+    df_features = engineer_features(df)
+    feature_cols = save_features(df_features)
+    print(f"   ✅ Subagent A done — {len(feature_cols)} features engineered")
+    print(f"   💾 Saved: data/processed/features.parquet")
+    print(f"   📄 Saved: data/processed/feature_schema.json")
 
 
 if __name__ == "__main__":
-    df_feat, feature_cols = run()
-    print(f"   ✅ Subagent A done — {len(feature_cols)} features engineered")
-    print(f"   💾 Saved: {FEATURES_PATH}")
-    print(f"   📄 Saved: {SCHEMA_PATH}")
+    run()

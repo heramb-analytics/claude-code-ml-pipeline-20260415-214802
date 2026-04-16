@@ -1,60 +1,78 @@
 {
-  "generated_at": "2026-04-16T07:27:59.597287+00:00",
-  "source": "data/raw/transactions.csv",
-  "rows_input": 5,
-  "rows_output": 5,
+  "timestamp": "2026-04-16T11:21:30.595025+00:00",
+  "source_file": "data/raw/transactions.csv",
+  "output_file": "data/processed/clean.parquet",
+  "rows_ingested": 5,
+  "columns": [
+    "transaction_id",
+    "timestamp",
+    "merchant_id",
+    "amount",
+    "category",
+    "is_anomaly"
+  ],
   "checks_passed": 10,
   "checks_total": 10,
-  "checks": [
+  "results": [
     {
-      "check": "required_columns_present",
+      "check": 1,
+      "name": "file_not_empty",
       "passed": true,
-      "detail": ""
+      "fix": ""
     },
     {
-      "check": "no_duplicate_transaction_ids",
+      "check": 2,
+      "name": "required_columns_present",
       "passed": true,
-      "detail": ""
+      "fix": ""
     },
     {
-      "check": "amount_positive",
+      "check": 3,
+      "name": "no_duplicate_transaction_ids",
       "passed": true,
-      "detail": ""
+      "fix": ""
     },
     {
-      "check": "amount_realistic_range",
+      "check": 4,
+      "name": "amount_non_negative",
       "passed": true,
-      "detail": ""
+      "fix": ""
     },
     {
-      "check": "is_anomaly_binary",
+      "check": 5,
+      "name": "no_null_amounts",
       "passed": true,
-      "detail": ""
+      "fix": ""
     },
     {
-      "check": "no_nulls_in_key_columns",
+      "check": 6,
+      "name": "is_anomaly_binary",
       "passed": true,
-      "detail": ""
+      "fix": ""
     },
     {
-      "check": "timestamp_parseable",
+      "check": 7,
+      "name": "timestamp_parseable",
       "passed": true,
-      "detail": ""
+      "fix": ""
     },
     {
-      "check": "category_non_empty",
+      "check": 8,
+      "name": "no_null_categories",
       "passed": true,
-      "detail": ""
+      "fix": ""
     },
     {
-      "check": "merchant_id_non_null",
+      "check": 9,
+      "name": "amount_reasonable_range",
       "passed": true,
-      "detail": ""
+      "fix": ""
     },
     {
-      "check": "both_classes_present",
+      "check": 10,
+      "name": "anomaly_rate_plausible",
       "passed": true,
-      "detail": "normal=3 anomaly=2"
+      "fix": ""
     }
   ]
 }

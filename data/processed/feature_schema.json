@@ -1,80 +1,46 @@
 {
+  "timestamp": "2026-04-16T11:22:39.539203+00:00",
+  "total_features": 16,
   "feature_columns": [
+    "amount",
     "hour_of_day",
     "day_of_week",
     "is_weekend",
-    "is_business_hours",
-    "amount_log",
+    "month",
+    "log_amount",
     "amount_zscore",
-    "is_high_value",
-    "category_encoded",
-    "merchant_txn_count"
+    "amount_percentile",
+    "is_large_txn",
+    "is_round_amount",
+    "cat_electronics",
+    "cat_food",
+    "cat_retail",
+    "merchant_txn_count",
+    "amount_vs_merchant_avg",
+    "hour_txn_volume"
   ],
-  "dtypes": {
-    "hour_of_day": "int32",
-    "day_of_week": "int32",
-    "is_weekend": "int64",
-    "is_business_hours": "int64",
-    "amount_log": "float64",
-    "amount_zscore": "float64",
-    "is_high_value": "int64",
-    "category_encoded": "int8",
-    "merchant_txn_count": "int64"
-  },
-  "stats": {
-    "hour_of_day": {
-      "mean": 9.0,
-      "std": 0.0,
-      "min": 9.0,
-      "max": 9.0
-    },
-    "day_of_week": {
-      "mean": 0.0,
-      "std": 0.0,
-      "min": 0.0,
-      "max": 0.0
-    },
-    "is_weekend": {
-      "mean": 0.0,
-      "std": 0.0,
-      "min": 0.0,
-      "max": 0.0
-    },
-    "is_business_hours": {
-      "mean": 1.0,
-      "std": 0.0,
-      "min": 1.0,
-      "max": 1.0
-    },
-    "amount_log": {
-      "mean": 6.5067412896802095,
-      "std": 2.476412433876237,
-      "min": 3.828641396489095,
-      "max": 9.210439367076006
-    },
-    "amount_zscore": {
-      "mean": 4.4408920985006264e-17,
-      "std": 1.0,
-      "min": -0.7458813763912222,
-      "max": 1.2142689795818422
-    },
-    "is_high_value": {
-      "mean": 0.2,
-      "std": 0.447213595499958,
-      "min": 0.0,
-      "max": 1.0
-    },
-    "category_encoded": {
-      "mean": 1.0,
-      "std": 1.0,
-      "min": 0.0,
-      "max": 2.0
-    },
-    "merchant_txn_count": {
-      "mean": 1.8,
-      "std": 0.4472135954999579,
-      "min": 1.0,
-      "max": 2.0
-    }
-  }
+  "all_columns": [
+    "transaction_id",
+    "timestamp",
+    "merchant_id",
+    "amount",
+    "category",
+    "is_anomaly",
+    "hour_of_day",
+    "day_of_week",
+    "is_weekend",
+    "month",
+    "log_amount",
+    "amount_zscore",
+    "amount_percentile",
+    "is_large_txn",
+    "is_round_amount",
+    "cat_electronics",
+    "cat_food",
+    "cat_retail",
+    "merchant_txn_count",
+    "amount_vs_merchant_avg",
+    "hour_txn_volume"
+  ],
+  "rows": 5
 }

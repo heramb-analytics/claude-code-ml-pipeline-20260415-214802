@@ -1,28 +1,36 @@
 {
-  "trained_at": "2026-04-16T07:28:21.819966+00:00",
+  "timestamp": "2026-04-16T11:23:37.310266+00:00",
   "algorithm": "IsolationForest",
   "best_params": {
-    "n_estimators": 50,
+    "n_estimators": 100,
     "max_samples": "auto",
-    "contamination": 0.1
+    "contamination": 0.4
   },
-  "feature_columns": [
+  "train_size": 3,
+  "val_size": 1,
+  "test_size": 1,
+  "feature_cols": [
+    "amount",
     "hour_of_day",
     "day_of_week",
     "is_weekend",
-    "is_business_hours",
-    "amount_log",
+    "month",
+    "log_amount",
     "amount_zscore",
-    "is_high_value",
-    "category_encoded",
-    "merchant_txn_count"
+    "amount_percentile",
+    "is_large_txn",
+    "is_round_amount",
+    "cat_electronics",
+    "cat_food",
+    "cat_retail",
+    "merchant_txn_count",
+    "amount_vs_merchant_avg",
+    "hour_txn_volume"
   ],
   "metrics": {
     "precision": 1.0,
-    "recall": 0.5,
-    "f1_score": 0.6666666666666666,
-    "roc_auc": 0.8333333333333334
-  },
-  "train_rows": 5,
-  "anomaly_rate": 0.4
+    "recall": 1.0,
+    "f1_score": 1.0,
+    "roc_auc": null
+  }
 }

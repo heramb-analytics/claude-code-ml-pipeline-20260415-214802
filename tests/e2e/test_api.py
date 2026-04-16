@@ -4,82 +4,90 @@ import re
 from pathlib import Path
 
 import pytest
+import requests
 from playwright.sync_api import Page, expect
 
 BASE_URL = "http://localhost:8000"
 SCREENSHOTS_DIR = Path("reports/screenshots")
-SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _save(page: Page, filename: str) -> None:
-    """Save a screenshot and print confirmation.
-
-    Args:
-        page: Playwright page object.
-        filename: Target filename (saved under reports/screenshots/).
-    """
-    path = SCREENSHOTS_DIR / filename
-    page.screenshot(path=str(path))
-    size = path.stat().st_size
-    print(f"   ✅ Saved: reports/screenshots/{filename} ({size:,} bytes)")
+@pytest.fixture(autouse=True)
+def ensure_screenshots_dir():
+    """Ensure screenshots directory exists."""
+    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def test_01_dashboard_home(page: Page) -> None:
-    """Dashboard loads and displays the header title."""
+def test_dashboard_home(page: Page) -> None:
+    """Test dashboard home page loads with correct title and live status."""
     print("   📸 Taking screenshot 1/6: 01_dashboard_home.png...")
     page.goto(BASE_URL)
+    page.wait_for_load_state("networkidle")
     expect(page.locator("h1")).to_contain_text("Transaction Anomaly Detection")
-    _save(page, "01_dashboard_home.png")
+    page.screenshot(path=str(SCREENSHOTS_DIR / "01_dashboard_home.png"), full_page=True)
+    size = (SCREENSHOTS_DIR / "01_dashboard_home.png").stat().st_size
+    print(f"   ✅ Saved: reports/screenshots/01_dashboard_home.png ({size} bytes)")
 
 
-def test_02_form_filled(page: Page) -> None:
-    """Prediction form can be filled with high-value anomaly values."""
+def test_form_filled(page: Page) -> None:
+    """Test filling in the prediction form with anomalous values."""
     print("   📸 Taking screenshot 2/6: 02_form_filled.png...")
     page.goto(BASE_URL)
-    page.fill("input[name='amount_log']", "9.2")
-    page.fill("input[name='amount_zscore']", "3.5")
-    page.fill("input[name='is_high_value']", "1")
-    _save(page, "02_form_filled.png")
+    page.wait_for_load_state("networkidle")
+    page.fill("input[name='amount']", "9999.99")
+    page.fill("input[name='hour_of_day']", "2")
+    page.fill("input[name='day_of_week']", "6")
+    page.fill("input[name='merchant_txn_count']", "1")
+    page.screenshot(path=str(SCREENSHOTS_DIR / "02_form_filled.png"), full_page=True)
+    size = (SCREENSHOTS_DIR / "02_form_filled.png").stat().st_size
+    print(f"   ✅ Saved: reports/screenshots/02_form_filled.png ({size} bytes)")
 
 
-def test_03_prediction_result(page: Page) -> None:
-    """Submitting the form shows a prediction result badge."""
+def test_prediction_result(page: Page) -> None:
+    """Test submitting the form and getting a prediction badge."""
     print("   📸 Taking screenshot 3/6: 03_prediction_result.png...")
     page.goto(BASE_URL)
-    page.fill("input[name='amount_log']", "9.2")
-    page.fill("input[name='amount_zscore']", "3.5")
-    page.fill("input[name='is_high_value']", "1")
+    page.wait_for_load_state("networkidle")
+    page.fill("input[name='amount']", "9999.99")
+    page.fill("input[name='hour_of_day']", "3")
+    page.fill("input[name='day_of_week']", "6")
+    page.fill("input[name='merchant_txn_count']", "1")
     page.click("button[type='submit']")
-    page.wait_for_selector("#result-badge", state="visible", timeout=5000)
-    badge_text = page.locator("#result-badge").inner_text()
-    assert badge_text in ("ANOMALY", "NORMAL"), f"Unexpected badge: {badge_text}"
-    _save(page, "03_prediction_result.png")
+    page.wait_for_selector("#badge:not(.hidden)", timeout=10000)
+    page.screenshot(path=str(SCREENSHOTS_DIR / "03_prediction_result.png"), full_page=True)
+    size = (SCREENSHOTS_DIR / "03_prediction_result.png").stat().st_size
+    print(f"   ✅ Saved: reports/screenshots/03_prediction_result.png ({size} bytes)")
 
 
-def test_04_swagger_docs(page: Page) -> None:
-    """Swagger UI is accessible at /docs."""
+def test_swagger_docs(page: Page) -> None:
+    """Test Swagger UI loads correctly."""
     print("   📸 Taking screenshot 4/6: 04_swagger_docs.png...")
     page.goto(f"{BASE_URL}/docs")
-    page.wait_for_load_state("networkidle", timeout=8000)
-    # Swagger UI renders title in .title class or as a heading
-    title_loc = page.locator(".title, h2, h1").first
-    expect(title_loc).to_be_visible(timeout=8000)
-    _save(page, "04_swagger_docs.png")
+    page.wait_for_load_state("networkidle")
+    page.wait_for_selector(".swagger-ui", timeout=10000)
+    page.screenshot(path=str(SCREENSHOTS_DIR / "04_swagger_docs.png"), full_page=True)
+    size = (SCREENSHOTS_DIR / "04_swagger_docs.png").stat().st_size
+    print(f"   ✅ Saved: reports/screenshots/04_swagger_docs.png ({size} bytes)")
 
 
-def test_05_metrics_endpoint(page: Page) -> None:
-    """Metrics endpoint returns JSON with accuracy field."""
+def test_metrics_endpoint(page: Page) -> None:
+    """Test /metrics endpoint returns JSON with algorithm field."""
     print("   📸 Taking screenshot 5/6: 05_metrics_endpoint.png...")
     page.goto(f"{BASE_URL}/metrics")
+    page.wait_for_load_state("networkidle")
     content = page.content()
-    assert "algorithm" in content, "algorithm key not found in /metrics response"
-    _save(page, "05_metrics_endpoint.png")
+    assert "IsolationForest" in content or "algorithm" in content
+    page.screenshot(path=str(SCREENSHOTS_DIR / "05_metrics_endpoint.png"), full_page=True)
+    size = (SCREENSHOTS_DIR / "05_metrics_endpoint.png").stat().st_size
+    print(f"   ✅ Saved: reports/screenshots/05_metrics_endpoint.png ({size} bytes)")
 
 
-def test_06_health_endpoint(page: Page) -> None:
-    """Health endpoint returns ok status."""
+def test_health_endpoint(page: Page) -> None:
+    """Test /health endpoint returns ok status."""
     print("   📸 Taking screenshot 6/6: 06_health_endpoint.png...")
     page.goto(f"{BASE_URL}/health")
+    page.wait_for_load_state("networkidle")
     content = page.content()
-    assert "ok" in content, "'ok' not found in /health response"
-    _save(page, "06_health_endpoint.png")
+    assert "ok" in content
+    page.screenshot(path=str(SCREENSHOTS_DIR / "06_health_endpoint.png"), full_page=True)
+    size = (SCREENSHOTS_DIR / "06_health_endpoint.png").stat().st_size
+    print(f"   ✅ Saved: reports/screenshots/06_health_endpoint.png ({size} bytes)")

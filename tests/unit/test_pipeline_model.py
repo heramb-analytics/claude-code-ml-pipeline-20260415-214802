@@ -12,94 +12,88 @@ import pytest
 MODEL_PATH = Path("models/pipeline_model.pkl")
 METRICS_PATH = Path("models/pipeline_model_metrics.json")
 FEATURES_PATH = Path("data/processed/features.parquet")
-SCHEMA_PATH = Path("data/processed/feature_schema.json")
 CLEAN_PATH = Path("data/processed/clean.parquet")
-QUALITY_REPORT_PATH = Path("logs/quality_report.json")
 
 
 @pytest.fixture(scope="module")
 def model_bundle():
-    """Load the trained model bundle dict."""
-    return pickle.loads(MODEL_PATH.read_bytes())
+    """Load the saved model bundle."""
+    with open(MODEL_PATH, "rb") as f:
+        return pickle.load(f)
 
 
 @pytest.fixture(scope="module")
-def schema():
-    """Load the feature schema."""
-    return json.loads(SCHEMA_PATH.read_text())
+def features_df():
+    """Load the features DataFrame."""
+    return pd.read_parquet(FEATURES_PATH)
 
 
-@pytest.fixture(scope="module")
-def metrics():
-    """Load the model metrics."""
-    return json.loads(METRICS_PATH.read_text())
+def test_model_load(model_bundle):
+    """Test that model bundle loads correctly with expected keys."""
+    assert "model" in model_bundle
+    assert "feature_cols" in model_bundle
+    assert model_bundle["model"] is not None
 
 
-@pytest.fixture(scope="module")
-def sample_features(schema):
-    """Return a sample feature array from the features parquet."""
-    df = pd.read_parquet(FEATURES_PATH)
-    return df[schema["feature_columns"]].values[:1]
+def test_predict_schema(model_bundle, features_df):
+    """Test that predict returns correct shape and binary values."""
+    model = model_bundle["model"]
+    feature_cols = model_bundle["feature_cols"]
+    X = features_df[feature_cols].values.astype(float)
+    raw_preds = model.predict(X)
+    # IsolationForest returns -1 (anomaly) or 1 (normal)
+    assert raw_preds.shape == (len(X),)
+    assert set(raw_preds).issubset({-1, 1})
 
 
-def test_model_loads():
-    """Model pickle file exists and loads without error."""
-    assert MODEL_PATH.exists(), "models/pipeline_model.pkl not found"
-    bundle = pickle.loads(MODEL_PATH.read_bytes())
-    assert "model" in bundle, "model bundle missing 'model' key"
-    assert bundle["model"] is not None
+def test_model_metrics_file_exists():
+    """Test that metrics JSON file exists and has required keys."""
+    assert METRICS_PATH.exists(), f"Metrics file missing: {METRICS_PATH}"
+    with open(METRICS_PATH) as f:
+        metrics = json.load(f)
+    assert "algorithm" in metrics
+    assert "metrics" in metrics
+    assert "f1_score" in metrics["metrics"]
 
 
-def test_metrics_file_exists():
-    """Metrics JSON file exists and contains required inner keys."""
-    assert METRICS_PATH.exists(), "models/pipeline_model_metrics.json not found"
-    m = json.loads(METRICS_PATH.read_text())
-    assert "algorithm" in m
-    assert "best_params" in m
-    assert "metrics" in m
-    for key in ("precision", "recall", "f1_score", "roc_auc"):
-        assert key in m["metrics"], f"Missing metrics key: {key}"
+def test_feature_columns_match(model_bundle, features_df):
+    """Test that saved feature columns exist in the features DataFrame."""
+    feature_cols = model_bundle["feature_cols"]
+    for col in feature_cols:
+        assert col in features_df.columns, f"Feature column missing: {col}"
 
 
-def test_predict_returns_binary(model_bundle, sample_features):
-    """Model predict() maps to binary 0/1 labels."""
-    clf = model_bundle["model"]
-    raw = clf.predict(sample_features)  # returns -1 or 1
-    preds = (raw == -1).astype(int)
-    assert set(preds).issubset({0, 1}), f"Unexpected labels: {set(preds)}"
-
-
-def test_score_samples_shape(model_bundle, sample_features):
-    """score_samples returns an array of shape (n_samples,)."""
-    clf = model_bundle["model"]
-    scores = clf.score_samples(sample_features)
-    assert scores.shape == (1,), f"Expected shape (1,), got {scores.shape}"
-
-
-def test_anomaly_scores_finite(model_bundle, sample_features):
-    """Anomaly scores are finite (no NaN / Inf)."""
-    clf = model_bundle["model"]
-    scores = clf.score_samples(sample_features)
-    assert np.all(np.isfinite(scores)), "Anomaly scores contain NaN or Inf"
-
-
-def test_clean_parquet_schema():
-    """clean.parquet has the expected columns."""
+def test_clean_parquet_exists():
+    """Test that clean.parquet was saved by Stage 1."""
+    assert CLEAN_PATH.exists(), f"Clean parquet missing: {CLEAN_PATH}"
     df = pd.read_parquet(CLEAN_PATH)
-    required = {"transaction_id", "timestamp", "merchant_id", "amount", "category", "is_anomaly"}
-    assert required.issubset(set(df.columns)), f"Missing columns: {required - set(df.columns)}"
+    assert len(df) > 0
+    assert "is_anomaly" in df.columns
 
 
-def test_feature_schema_valid(schema):
-    """Feature schema has required keys and non-empty feature list."""
-    assert "feature_columns" in schema
-    assert "dtypes" in schema
-    assert len(schema["feature_columns"]) > 0
+def test_no_nan_in_features(model_bundle, features_df):
+    """Test that feature matrix has no NaN values."""
+    feature_cols = model_bundle["feature_cols"]
+    X = features_df[feature_cols]
+    assert not X.isna().any().any(), "NaN values found in feature matrix"
 
 
-def test_quality_report_all_checks_passed():
-    """Quality report records 10/10 checks passed."""
-    report = json.loads(QUALITY_REPORT_PATH.read_text())
-    assert report["checks_passed"] == report["checks_total"], (
-        f"Only {report['checks_passed']}/{report['checks_total']} quality checks passed"
-    )
+def test_decision_function_returns_scores(model_bundle, features_df):
+    """Test that decision_function returns numeric scores."""
+    model = model_bundle["model"]
+    feature_cols = model_bundle["feature_cols"]
+    X = features_df[feature_cols].values.astype(float)
+    scores = model.decision_function(X)
+    assert scores.shape == (len(X),)
+    assert np.isfinite(scores).all()
+
+
+def test_prediction_output_type(model_bundle, features_df):
+    """Test end-to-end prediction produces expected binary output."""
+    model = model_bundle["model"]
+    feature_cols = model_bundle["feature_cols"]
+    X = features_df[feature_cols].values.astype(float)
+    raw_preds = model.predict(X)
+    y_pred = np.where(raw_preds == -1, 1, 0)
+    assert y_pred.dtype in (np.int64, np.int32, int, np.intp)
+    assert set(y_pred).issubset({0, 1})

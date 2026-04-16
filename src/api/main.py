@@ -9,136 +9,122 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
+# ── Model loading ────────────────────────────────────────────────────────────
 MODEL_PATH = Path("models/pipeline_model.pkl")
 METRICS_PATH = Path("models/pipeline_model_metrics.json")
-SCHEMA_PATH = Path("data/processed/feature_schema.json")
 
-app = FastAPI(title="Transaction Anomaly Detection API", version="1.0.0")
-
-# In-memory store for last 10 predictions
+_model_bundle: dict | None = None
+_metrics: dict | None = None
 _recent_predictions: deque = deque(maxlen=10)
-_clf = None
-_metrics: dict = {}
-_feature_cols: list = []
+
+START_TIME = datetime.now(timezone.utc)
 
 
-def _load_model() -> None:
-    """Load model bundle and metadata into module-level globals."""
-    global _clf, _metrics, _feature_cols
-    bundle = pickle.loads(MODEL_PATH.read_bytes())
-    _clf = bundle["model"]
-    _feature_cols = bundle["feature_cols"]
-    _metrics = json.loads(METRICS_PATH.read_text())
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    """Load model on application startup."""
-    _load_model()
-
-
-class PredictRequest(BaseModel):
-    """Prediction request schema."""
-
-    hour_of_day: float = Field(..., ge=0, le=23, description="Hour of transaction (0-23)")
-    day_of_week: float = Field(..., ge=0, le=6, description="Day of week (0=Mon, 6=Sun)")
-    is_weekend: int = Field(..., ge=0, le=1)
-    is_business_hours: int = Field(..., ge=0, le=1)
-    amount_log: float = Field(..., description="log1p(amount)")
-    amount_zscore: float = Field(..., description="Z-score normalised amount")
-    is_high_value: int = Field(..., ge=0, le=1)
-    category_encoded: int = Field(..., ge=0)
-    merchant_txn_count: int = Field(..., ge=1)
-
-
-class PredictResponse(BaseModel):
-    """Prediction response schema."""
-
-    request_id: str
-    timestamp: str
-    prediction: int
-    label: str
-    confidence: float
-
-
-@app.post("/predict", response_model=PredictResponse)
-async def predict(req: PredictRequest) -> PredictResponse:
-    """Run anomaly detection inference on a single transaction.
-
-    Args:
-        req: Feature values for the transaction.
+def load_model() -> dict:
+    """Load model bundle from disk (cached after first load).
 
     Returns:
-        Prediction result with label and confidence score.
+        Dict with 'model' and 'feature_cols' keys.
     """
-    if _clf is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-
-    features = np.array([[getattr(req, col) for col in _feature_cols]])
-    # IsolationForest: -1 = anomaly, 1 = normal
-    raw_pred = int(_clf.predict(features)[0])
-    prediction = 1 if raw_pred == -1 else 0
-    label = "ANOMALY" if prediction == 1 else "NORMAL"
-
-    # Compute confidence from anomaly score (normalised to [0,1])
-    score = float(_clf.score_samples(features)[0])
-    all_scores = _clf.score_samples(features)
-    # Use decision_function threshold as confidence proxy
-    confidence = round(abs(score) / (abs(score) + 1), 4)
-
-    request_id = str(uuid.uuid4())[:8]
-    ts = datetime.now(timezone.utc).isoformat()
-
-    result = PredictResponse(
-        request_id=request_id,
-        timestamp=ts,
-        prediction=prediction,
-        label=label,
-        confidence=confidence,
-    )
-    _recent_predictions.appendleft(result.model_dump())
-    return result
+    global _model_bundle
+    if _model_bundle is None:
+        with open(MODEL_PATH, "rb") as f:
+            _model_bundle = pickle.load(f)
+    return _model_bundle
 
 
-@app.get("/health")
-async def health() -> dict[str, Any]:
-    """Return service health status."""
-    return {
-        "status": "ok",
-        "model_loaded": _clf is not None,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+def load_metrics() -> dict:
+    """Load metrics JSON (cached after first load).
 
-
-@app.get("/metrics")
-async def metrics_endpoint() -> dict[str, Any]:
-    """Return model metrics."""
+    Returns:
+        Metrics dictionary.
+    """
+    global _metrics
+    if _metrics is None:
+        with open(METRICS_PATH) as f:
+            _metrics = json.load(f)
     return _metrics
 
 
+# ── App setup ────────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="Transaction Anomaly Detection API",
+    description="IsolationForest-based anomaly detection for financial transactions",
+    version="1.0.0",
+)
+
+
+# ── Request/Response schemas ─────────────────────────────────────────────────
+class TransactionRequest(BaseModel):
+    """Input schema for a single transaction prediction."""
+
+    amount: float = 150.0
+    hour_of_day: int = 9
+    day_of_week: int = 0
+    is_weekend: int = 0
+    month: int = 1
+    merchant_txn_count: int = 2
+    amount_vs_merchant_avg: float = 0.0
+    hour_txn_volume: int = 1
+
+
+class PredictionResponse(BaseModel):
+    """Prediction output with anomaly score and label."""
+
+    request_id: str
+    timestamp: str
+    is_anomaly: int
+    anomaly_score: float
+    confidence: float
+    input: dict[str, Any]
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+def build_feature_vector(req: TransactionRequest, feature_cols: list[str]) -> np.ndarray:
+    """Convert request into feature vector aligned to model's expected columns.
+
+    Args:
+        req: Transaction request object.
+        feature_cols: List of feature column names model was trained on.
+
+    Returns:
+        1-D numpy array of feature values.
+    """
+    # Build a row dict with all possible features set to defaults
+    row = {
+        "amount": req.amount,
+        "hour_of_day": req.hour_of_day,
+        "day_of_week": req.day_of_week,
+        "is_weekend": req.is_weekend,
+        "month": req.month,
+        "log_amount": np.log1p(req.amount),
+        "amount_zscore": 0.0,
+        "amount_percentile": 0.5,
+        "is_large_txn": int(req.amount > 500),
+        "is_round_amount": int(req.amount % 100 == 0),
+        "merchant_txn_count": req.merchant_txn_count,
+        "amount_vs_merchant_avg": req.amount_vs_merchant_avg,
+        "hour_txn_volume": req.hour_txn_volume,
+        # category dummies — default 0
+        "cat_electronics": 0,
+        "cat_food": 0,
+        "cat_retail": 0,
+    }
+    return np.array([row.get(c, 0.0) for c in feature_cols], dtype=float)
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def dashboard() -> HTMLResponse:
-    """Serve the HTML prediction dashboard."""
-    recent_rows = ""
-    for p in list(_recent_predictions):
-        badge_class = "bg-red-100 text-red-800" if p["prediction"] == 1 else "bg-green-100 text-green-800"
-        recent_rows += f"""
-        <tr class="border-b">
-          <td class="px-4 py-2 font-mono text-xs">{p['request_id']}</td>
-          <td class="px-4 py-2 text-xs">{p['timestamp'][:19]}</td>
-          <td class="px-4 py-2"><span class="px-2 py-1 rounded text-xs font-bold {badge_class}">{p['label']}</span></td>
-          <td class="px-4 py-2 text-xs">{p['confidence']:.1%}</td>
-        </tr>"""
-
-    m = _metrics
-    inner_m = m.get("metrics", {})
-    f1 = inner_m.get("f1_score", 0)
-    roc_auc = inner_m.get("roc_auc", 0)
-    algorithm = m.get("algorithm", "—")
+    """Serve the HTML dashboard UI."""
+    metrics = load_metrics()
+    bundle = load_model()
+    uptime = (datetime.now(timezone.utc) - START_TIME).seconds
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -147,162 +133,240 @@ async def dashboard() -> HTMLResponse:
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Transaction Anomaly Detection</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .pulse {{ animation: pulse 2s infinite; }}
+    @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:.5}} }}
+  </style>
 </head>
-<body class="bg-gray-50 min-h-screen">
-
-  <!-- Header -->
-  <header class="bg-blue-900 text-white px-8 py-4 flex items-center justify-between shadow">
-    <div>
-      <h1 class="text-2xl font-bold">Transaction Anomaly Detection</h1>
-      <p class="text-blue-200 text-sm">Built with Claude Code · ML Pipeline v1.0</p>
+<body class="bg-gray-900 text-white min-h-screen p-6">
+  <div class="max-w-5xl mx-auto">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-8">
+      <div>
+        <h1 class="text-3xl font-bold text-indigo-400">🔍 Transaction Anomaly Detection</h1>
+        <p class="text-gray-400 mt-1">IsolationForest · Real-time Fraud Scoring</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <div class="w-3 h-3 bg-green-400 rounded-full pulse"></div>
+        <span class="text-green-400 text-sm font-medium">LIVE · Uptime {uptime}s</span>
+      </div>
     </div>
-    <div class="flex items-center gap-2">
-      <span id="status-dot" class="w-3 h-3 rounded-full bg-gray-400 inline-block"></span>
-      <span id="status-text" class="text-sm">Checking...</span>
+
+    <!-- Metrics cards -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+        <p class="text-gray-400 text-xs uppercase tracking-wide">Algorithm</p>
+        <p class="text-white font-bold text-lg mt-1">{metrics.get('algorithm','IsolationForest')}</p>
+      </div>
+      <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+        <p class="text-gray-400 text-xs uppercase tracking-wide">F1 Score</p>
+        <p class="text-green-400 font-bold text-lg mt-1">{metrics['metrics'].get('f1_score', 0):.4f}</p>
+      </div>
+      <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+        <p class="text-gray-400 text-xs uppercase tracking-wide">Precision</p>
+        <p class="text-blue-400 font-bold text-lg mt-1">{metrics['metrics'].get('precision', 0):.4f}</p>
+      </div>
+      <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+        <p class="text-gray-400 text-xs uppercase tracking-wide">Recall</p>
+        <p class="text-yellow-400 font-bold text-lg mt-1">{metrics['metrics'].get('recall', 0):.4f}</p>
+      </div>
     </div>
-  </header>
 
-  <main class="max-w-5xl mx-auto px-6 py-8 space-y-8">
-
-    <!-- Metrics Cards -->
-    <section class="grid grid-cols-3 gap-4">
-      <div class="bg-white rounded-xl shadow p-5 text-center">
-        <p class="text-xs text-gray-500 uppercase font-semibold">Algorithm</p>
-        <p class="text-lg font-bold text-blue-700 mt-1">{algorithm}</p>
-      </div>
-      <div class="bg-white rounded-xl shadow p-5 text-center">
-        <p class="text-xs text-gray-500 uppercase font-semibold">F1 Score</p>
-        <p class="text-2xl font-bold text-green-600 mt-1">{f1:.2f}</p>
-      </div>
-      <div class="bg-white rounded-xl shadow p-5 text-center">
-        <p class="text-xs text-gray-500 uppercase font-semibold">ROC-AUC</p>
-        <p class="text-2xl font-bold text-purple-600 mt-1">{roc_auc:.2f}</p>
-      </div>
-    </section>
-
-    <!-- Prediction Form + Result -->
-    <section class="grid grid-cols-2 gap-6">
-      <div class="bg-white rounded-xl shadow p-6">
-        <h2 class="text-lg font-semibold mb-4">Run Prediction</h2>
-        <form id="predict-form" class="space-y-3">
-          <div class="grid grid-cols-2 gap-3">
-            <label class="block"><span class="text-xs text-gray-500">Hour of Day</span>
-              <input name="hour_of_day" type="number" value="9" min="0" max="23" class="w-full border rounded px-2 py-1 text-sm mt-1"/>
-            </label>
-            <label class="block"><span class="text-xs text-gray-500">Day of Week</span>
-              <input name="day_of_week" type="number" value="1" min="0" max="6" class="w-full border rounded px-2 py-1 text-sm mt-1"/>
-            </label>
-            <label class="block"><span class="text-xs text-gray-500">Is Weekend</span>
-              <input name="is_weekend" type="number" value="0" min="0" max="1" class="w-full border rounded px-2 py-1 text-sm mt-1"/>
-            </label>
-            <label class="block"><span class="text-xs text-gray-500">Business Hours</span>
-              <input name="is_business_hours" type="number" value="1" min="0" max="1" class="w-full border rounded px-2 py-1 text-sm mt-1"/>
-            </label>
-            <label class="block"><span class="text-xs text-gray-500">Amount Log</span>
-              <input name="amount_log" type="number" value="5.01" step="0.01" class="w-full border rounded px-2 py-1 text-sm mt-1"/>
-            </label>
-            <label class="block"><span class="text-xs text-gray-500">Amount Z-score</span>
-              <input name="amount_zscore" type="number" value="0.0" step="0.1" class="w-full border rounded px-2 py-1 text-sm mt-1"/>
-            </label>
-            <label class="block"><span class="text-xs text-gray-500">High Value</span>
-              <input name="is_high_value" type="number" value="0" min="0" max="1" class="w-full border rounded px-2 py-1 text-sm mt-1"/>
-            </label>
-            <label class="block"><span class="text-xs text-gray-500">Category Encoded</span>
-              <input name="category_encoded" type="number" value="2" min="0" class="w-full border rounded px-2 py-1 text-sm mt-1"/>
-            </label>
-            <label class="block col-span-2"><span class="text-xs text-gray-500">Merchant Txn Count</span>
-              <input name="merchant_txn_count" type="number" value="3" min="1" class="w-full border rounded px-2 py-1 text-sm mt-1"/>
-            </label>
-          </div>
-          <button type="submit" class="w-full bg-blue-700 hover:bg-blue-800 text-white font-semibold py-2 rounded-lg mt-2 transition">
-            Predict
-          </button>
-        </form>
-      </div>
-
-      <div class="bg-white rounded-xl shadow p-6 flex flex-col items-center justify-center">
-        <h2 class="text-lg font-semibold mb-4 self-start">Result</h2>
-        <div id="result-panel" class="text-center hidden">
-          <div id="result-badge" class="text-3xl font-bold px-8 py-4 rounded-2xl mb-3"></div>
-          <p class="text-sm text-gray-500">Confidence: <span id="confidence-val" class="font-semibold text-gray-700"></span></p>
-          <p class="text-xs text-gray-400 mt-1">Request ID: <span id="request-id"></span></p>
+    <!-- Prediction form -->
+    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 mb-8">
+      <h2 class="text-xl font-semibold mb-4 text-indigo-300">🔮 Predict Transaction</h2>
+      <form id="predForm" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div>
+          <label class="text-gray-400 text-xs block mb-1">Amount ($)</label>
+          <input type="number" step="0.01" name="amount" value="9999.99" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-400"/>
         </div>
-        <div id="result-placeholder" class="text-gray-400 text-sm">Submit a transaction to see the result.</div>
-      </div>
-    </section>
+        <div>
+          <label class="text-gray-400 text-xs block mb-1">Hour of Day</label>
+          <input type="number" min="0" max="23" name="hour_of_day" value="2" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-400"/>
+        </div>
+        <div>
+          <label class="text-gray-400 text-xs block mb-1">Day of Week</label>
+          <input type="number" min="0" max="6" name="day_of_week" value="6" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-400"/>
+        </div>
+        <div>
+          <label class="text-gray-400 text-xs block mb-1">Merchant Txn Count</label>
+          <input type="number" name="merchant_txn_count" value="1" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-400"/>
+        </div>
+        <div class="col-span-2 md:col-span-4 flex gap-3 mt-2">
+          <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2 rounded-lg transition-colors">
+            ▶ Predict
+          </button>
+          <div id="badge" class="hidden px-4 py-2 rounded-lg font-bold text-sm flex items-center"></div>
+        </div>
+      </form>
+    </div>
 
-    <!-- Recent Predictions Table -->
-    <section class="bg-white rounded-xl shadow p-6">
-      <h2 class="text-lg font-semibold mb-4">Last 10 Predictions</h2>
-      <div class="overflow-x-auto">
-        <table class="w-full text-left">
-          <thead><tr class="text-xs text-gray-500 uppercase border-b">
-            <th class="px-4 py-2">Request ID</th>
-            <th class="px-4 py-2">Timestamp</th>
-            <th class="px-4 py-2">Label</th>
-            <th class="px-4 py-2">Confidence</th>
-          </tr></thead>
-          <tbody id="predictions-table">{recent_rows if recent_rows else '<tr><td colspan="4" class="px-4 py-4 text-center text-gray-400 text-sm">No predictions yet.</td></tr>'}</tbody>
+    <!-- Recent predictions table -->
+    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+      <h2 class="text-xl font-semibold mb-4 text-indigo-300">📋 Last 10 Predictions</h2>
+      <div id="predTable" class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-gray-400 border-b border-gray-700">
+              <th class="text-left pb-2">Request ID</th>
+              <th class="text-left pb-2">Amount</th>
+              <th class="text-left pb-2">Score</th>
+              <th class="text-left pb-2">Result</th>
+              <th class="text-left pb-2">Time</th>
+            </tr>
+          </thead>
+          <tbody id="predRows" class="divide-y divide-gray-700">
+            <tr><td colspan="5" class="text-gray-500 text-center py-4">No predictions yet</td></tr>
+          </tbody>
         </table>
       </div>
-    </section>
+    </div>
 
-  </main>
+    <!-- Footer links -->
+    <div class="mt-6 flex gap-4 text-sm text-gray-500">
+      <a href="/docs" class="hover:text-indigo-400">📖 Swagger Docs</a>
+      <a href="/metrics" class="hover:text-indigo-400">📊 Metrics</a>
+      <a href="/health" class="hover:text-indigo-400">❤️ Health</a>
+    </div>
+  </div>
 
   <script>
-    async function checkHealth() {{
-      try {{
-        const r = await fetch('/health');
-        const d = await r.json();
-        const dot = document.getElementById('status-dot');
-        const txt = document.getElementById('status-text');
-        if (d.status === 'ok') {{
-          dot.className = 'w-3 h-3 rounded-full bg-green-400 inline-block';
-          txt.textContent = 'Live';
-        }}
-      }} catch(e) {{
-        document.getElementById('status-dot').className = 'w-3 h-3 rounded-full bg-red-400 inline-block';
-        document.getElementById('status-text').textContent = 'Offline';
-      }}
-    }}
-    checkHealth();
-    setInterval(checkHealth, 5000);
+    const predictions = [];
 
-    document.getElementById('predict-form').addEventListener('submit', async (e) => {{
+    document.getElementById('predForm').addEventListener('submit', async (e) => {{
       e.preventDefault();
       const fd = new FormData(e.target);
-      const body = {{}};
-      fd.forEach((v, k) => body[k] = parseFloat(v));
-      body.is_weekend = parseInt(body.is_weekend);
-      body.is_business_hours = parseInt(body.is_business_hours);
-      body.is_high_value = parseInt(body.is_high_value);
-      body.category_encoded = parseInt(body.category_encoded);
-      body.merchant_txn_count = parseInt(body.merchant_txn_count);
+      const payload = {{
+        amount: parseFloat(fd.get('amount')),
+        hour_of_day: parseInt(fd.get('hour_of_day')),
+        day_of_week: parseInt(fd.get('day_of_week')),
+        merchant_txn_count: parseInt(fd.get('merchant_txn_count')),
+        is_weekend: parseInt(fd.get('day_of_week')) >= 5 ? 1 : 0,
+        month: new Date().getMonth() + 1,
+        amount_vs_merchant_avg: 0,
+        hour_txn_volume: 1
+      }};
 
-      const r = await fetch('/predict', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(body)}});
-      const d = await r.json();
-      document.getElementById('result-panel').classList.remove('hidden');
-      document.getElementById('result-placeholder').classList.add('hidden');
-      const badge = document.getElementById('result-badge');
-      badge.textContent = d.label;
-      badge.className = d.prediction === 1
-        ? 'text-3xl font-bold px-8 py-4 rounded-2xl mb-3 bg-red-100 text-red-700'
-        : 'text-3xl font-bold px-8 py-4 rounded-2xl mb-3 bg-green-100 text-green-700';
-      document.getElementById('confidence-val').textContent = (d.confidence * 100).toFixed(1) + '%';
-      document.getElementById('request-id').textContent = d.request_id;
+      try {{
+        const res = await fetch('/predict', {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify(payload)
+        }});
+        const data = await res.json();
+        const badge = document.getElementById('badge');
+        badge.classList.remove('hidden');
+        if (data.is_anomaly === 1) {{
+          badge.className = 'px-4 py-2 rounded-lg font-bold text-sm flex items-center bg-red-900 text-red-300 border border-red-700';
+          badge.textContent = '🚨 ANOMALY DETECTED (score: ' + data.anomaly_score.toFixed(4) + ')';
+        }} else {{
+          badge.className = 'px-4 py-2 rounded-lg font-bold text-sm flex items-center bg-green-900 text-green-300 border border-green-700';
+          badge.textContent = '✅ NORMAL (score: ' + data.anomaly_score.toFixed(4) + ')';
+        }}
 
-      const tbody = document.getElementById('predictions-table');
-      const badgeCls = d.prediction === 1 ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800';
-      const row = `<tr class="border-b">
-        <td class="px-4 py-2 font-mono text-xs">${{d.request_id}}</td>
-        <td class="px-4 py-2 text-xs">${{d.timestamp.slice(0,19)}}</td>
-        <td class="px-4 py-2"><span class="px-2 py-1 rounded text-xs font-bold ${{badgeCls}}">${{d.label}}</span></td>
-        <td class="px-4 py-2 text-xs">${{(d.confidence*100).toFixed(1)}}%</td>
-      </tr>`;
-      if (tbody.querySelector('td[colspan]')) tbody.innerHTML = '';
-      tbody.insertAdjacentHTML('afterbegin', row);
+        predictions.unshift(data);
+        if (predictions.length > 10) predictions.pop();
+        renderTable();
+      }} catch(err) {{
+        console.error(err);
+      }}
     }});
+
+    function renderTable() {{
+      const tbody = document.getElementById('predRows');
+      if (!predictions.length) return;
+      tbody.innerHTML = predictions.map(p => `
+        <tr class="text-sm">
+          <td class="py-2 text-gray-400 font-mono text-xs">${{p.request_id.slice(0,8)}}...</td>
+          <td class="py-2">${{p.input.amount?.toFixed(2) ?? '—'}}</td>
+          <td class="py-2">${{p.anomaly_score.toFixed(4)}}</td>
+          <td class="py-2">${{p.is_anomaly === 1
+            ? '<span class="bg-red-900 text-red-300 px-2 py-0.5 rounded text-xs">ANOMALY</span>'
+            : '<span class="bg-green-900 text-green-300 px-2 py-0.5 rounded text-xs">NORMAL</span>'}}</td>
+          <td class="py-2 text-gray-400 text-xs">${{new Date(p.timestamp).toLocaleTimeString()}}</td>
+        </tr>
+      `).join('');
+    }}
   </script>
 </body>
 </html>"""
     return HTMLResponse(content=html)
+
+
+@app.post("/predict", response_model=PredictionResponse)
+async def predict(req: TransactionRequest) -> PredictionResponse:
+    """Predict whether a transaction is anomalous.
+
+    Args:
+        req: Transaction feature inputs.
+
+    Returns:
+        Prediction result with request_id, timestamp, and anomaly score.
+    """
+    bundle = load_model()
+    model = bundle["model"]
+    feature_cols = bundle["feature_cols"]
+
+    x = build_feature_vector(req, feature_cols).reshape(1, -1)
+    raw_pred = model.predict(x)[0]
+    score = float(model.decision_function(x)[0])
+    confidence = float(1 / (1 + np.exp(score)))
+    is_anomaly = int(raw_pred == -1)
+
+    result = PredictionResponse(
+        request_id=str(uuid.uuid4()),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        is_anomaly=is_anomaly,
+        anomaly_score=round(score, 6),
+        confidence=round(confidence, 4),
+        input=req.model_dump(),
+    )
+    _recent_predictions.appendleft(result.model_dump())
+    return result
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Health check endpoint.
+
+    Returns:
+        Status, uptime, and model info.
+    """
+    bundle = load_model()
+    return JSONResponse({
+        "status": "ok",
+        "uptime_seconds": (datetime.now(timezone.utc) - START_TIME).seconds,
+        "model": "IsolationForest",
+        "feature_count": len(bundle["feature_cols"]),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+@app.get("/metrics")
+async def metrics() -> JSONResponse:
+    """Return model performance metrics.
+
+    Returns:
+        Metrics JSON loaded from models/pipeline_model_metrics.json.
+    """
+    m = load_metrics()
+    return JSONResponse({
+        **m,
+        "request_id": str(uuid.uuid4()),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+@app.get("/predictions")
+async def recent_predictions() -> JSONResponse:
+    """Return last 10 predictions.
+
+    Returns:
+        List of recent prediction results.
+    """
+    return JSONResponse({
+        "predictions": list(_recent_predictions),
+        "count": len(_recent_predictions),
+        "request_id": str(uuid.uuid4()),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })

@@ -1,67 +1,79 @@
 {
-  "generated_at": "2026-04-16T07:28:11.425581+00:00",
+  "timestamp": "2026-04-16T11:22:47.976269+00:00",
   "checks_passed": 12,
   "checks_total": 12,
-  "checks": [
+  "results": [
     {
-      "check": "clean_parquet_exists",
+      "check": 1,
+      "name": "clean_parquet_not_empty",
       "passed": true,
       "detail": "5 rows"
     },
     {
-      "check": "features_parquet_exists",
+      "check": 2,
+      "name": "features_row_count_matches",
       "passed": true,
-      "detail": "5 rows"
+      "detail": "clean=5, features=5"
     },
     {
-      "check": "row_count_consistent",
+      "check": 3,
+      "name": "no_nan_in_numeric_features",
       "passed": true,
-      "detail": "clean=5 features=5"
+      "detail": "NaN count=0"
     },
     {
-      "check": "all_feature_cols_present",
+      "check": 4,
+      "name": "log_amount_non_negative",
       "passed": true,
-      "detail": ""
+      "detail": "log_amount >= 0"
     },
     {
-      "check": "no_nulls_in_features",
+      "check": 5,
+      "name": "hour_of_day_valid_range",
       "passed": true,
-      "detail": "0 nulls"
+      "detail": "hour in [0,23]"
     },
     {
-      "check": "target_col_in_clean",
+      "check": 6,
+      "name": "day_of_week_valid_range",
       "passed": true,
-      "detail": ""
+      "detail": "day in [0,6]"
     },
     {
-      "check": "target_binary",
+      "check": 7,
+      "name": "is_weekend_binary",
       "passed": true,
-      "detail": "unique={0, 1}"
+      "detail": "binary 0/1"
     },
     {
-      "check": "amount_log_non_negative",
+      "check": 8,
+      "name": "amount_percentile_range",
       "passed": true,
-      "detail": ""
+      "detail": "in [0,1]"
     },
     {
-      "check": "category_encoded_variance",
+      "check": 9,
+      "name": "target_column_present",
       "passed": true,
-      "detail": "n_unique=3"
+      "detail": "is_anomaly exists"
     },
     {
-      "check": "hour_of_day_valid_range",
+      "check": 10,
+      "name": "no_all_zero_feature_rows",
       "passed": true,
-      "detail": ""
+      "detail": "all-zero rows=0"
     },
     {
-      "check": "merchant_txn_count_positive",
+      "check": 11,
+      "name": "merchant_txn_count_positive",
       "passed": true,
-      "detail": ""
+      "detail": "> 0"
     },
     {
-      "check": "feature_schema_valid",
+      "check": 12,
+      "name": "feature_schema_exists",
       "passed": true,
-      "detail": ""
+      "detail": "file present"
     }
   ]
 }

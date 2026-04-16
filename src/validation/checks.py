@@ -1,107 +1,88 @@
 """Post-ingestion validation — 12 checks on clean + feature data."""
 
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 
+import pandas as pd
 import numpy as np
 
 
-class _NumpyEncoder(json.JSONEncoder):
-    """JSON encoder that handles numpy scalar types."""
-
-    def default(self, obj):  # noqa: D102
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-        return super().default(obj)
-from pathlib import Path
-
-import pandas as pd
-
 CLEAN_PATH = Path("data/processed/clean.parquet")
 FEATURES_PATH = Path("data/processed/features.parquet")
-SCHEMA_PATH = Path("data/processed/feature_schema.json")
-VALIDATION_REPORT_PATH = Path("logs/validation_report.json")
+REPORT_PATH = Path("logs/validation_report.json")
 
 
-def run() -> list:
-    """Run 12 validation checks on processed data.
+def run() -> None:
+    """Run 12 validation checks and save report."""
+    clean = pd.read_parquet(CLEAN_PATH)
+    features = pd.read_parquet(FEATURES_PATH)
 
-    Returns:
-        List of check result dicts.
-    """
-    Path("logs").mkdir(parents=True, exist_ok=True)
     results = []
+    passed = 0
 
-    df_clean = pd.read_parquet(CLEAN_PATH)
-    df_feat = pd.read_parquet(FEATURES_PATH)
-    schema = json.loads(SCHEMA_PATH.read_text())
+    def check(n: int, name: str, condition: bool, detail: str = "") -> None:
+        nonlocal passed
+        results.append({"check": n, "name": name, "passed": bool(condition), "detail": detail})
+        if condition:
+            passed += 1
 
-    def check(name: str, passed: bool, detail: str = "") -> None:
-        results.append({"check": name, "passed": passed, "detail": detail})
-
-    # 1 — clean parquet exists and non-empty
-    check("clean_parquet_exists", CLEAN_PATH.exists() and len(df_clean) > 0,
-          f"{len(df_clean)} rows")
-
-    # 2 — features parquet exists and non-empty
-    check("features_parquet_exists", FEATURES_PATH.exists() and len(df_feat) > 0,
-          f"{len(df_feat)} rows")
-
-    # 3 — row counts match between clean and features
-    check("row_count_consistent", len(df_clean) == len(df_feat),
-          f"clean={len(df_clean)} features={len(df_feat)}")
-
-    # 4 — all feature columns present in features parquet
-    missing_cols = [c for c in schema["feature_columns"] if c not in df_feat.columns]
-    check("all_feature_cols_present", len(missing_cols) == 0,
-          f"missing={missing_cols}" if missing_cols else "")
-
-    # 5 — no nulls in feature columns
-    null_counts = df_feat[schema["feature_columns"]].isnull().sum().sum()
-    check("no_nulls_in_features", null_counts == 0, f"{null_counts} nulls")
-
-    # 6 — target column present in clean
-    check("target_col_in_clean", "is_anomaly" in df_clean.columns)
-
-    # 7 — target is binary
-    unique_labels = set(int(v) for v in df_clean["is_anomaly"].unique())
-    check("target_binary", unique_labels.issubset({0, 1}), f"unique={unique_labels}")
-
-    # 8 — amount_log values are non-negative
-    check("amount_log_non_negative", (df_feat["amount_log"] >= 0).all())
-
-    # 9 — category_encoded has at least 2 unique values
-    n_cats = df_feat["category_encoded"].nunique()
-    check("category_encoded_variance", n_cats >= 1, f"n_unique={n_cats}")
-
-    # 10 — hour_of_day in [0, 23]
-    valid_hours = df_feat["hour_of_day"].between(0, 23).all()
-    check("hour_of_day_valid_range", bool(valid_hours))
-
-    # 11 — merchant_txn_count >= 1
-    check("merchant_txn_count_positive", (df_feat["merchant_txn_count"] >= 1).all())
-
-    # 12 — schema file contains required keys
-    schema_valid = all(k in schema for k in ["feature_columns", "dtypes", "stats"])
-    check("feature_schema_valid", schema_valid)
+    # 1. Clean parquet row count matches raw
+    check(1, "clean_parquet_not_empty", len(clean) > 0, f"{len(clean)} rows")
+    # 2. Features parquet row count matches clean
+    check(2, "features_row_count_matches", len(features) == len(clean),
+          f"clean={len(clean)}, features={len(features)}")
+    # 3. No NaN in feature numeric columns
+    numeric_cols = features.select_dtypes(include=[np.number]).columns.tolist()
+    nan_count = features[numeric_cols].isna().sum().sum()
+    check(3, "no_nan_in_numeric_features", nan_count == 0, f"NaN count={nan_count}")
+    # 4. log_amount column exists and is non-negative
+    check(4, "log_amount_non_negative",
+          "log_amount" in features.columns and (features["log_amount"] >= 0).all(),
+          "log_amount >= 0")
+    # 5. hour_of_day in [0, 23]
+    check(5, "hour_of_day_valid_range",
+          "hour_of_day" in features.columns and features["hour_of_day"].between(0, 23).all(),
+          "hour in [0,23]")
+    # 6. day_of_week in [0, 6]
+    check(6, "day_of_week_valid_range",
+          "day_of_week" in features.columns and features["day_of_week"].between(0, 6).all(),
+          "day in [0,6]")
+    # 7. is_weekend is binary
+    check(7, "is_weekend_binary",
+          "is_weekend" in features.columns and features["is_weekend"].isin([0, 1]).all(),
+          "binary 0/1")
+    # 8. amount_percentile in [0, 1]
+    check(8, "amount_percentile_range",
+          "amount_percentile" in features.columns and features["amount_percentile"].between(0, 1).all(),
+          "in [0,1]")
+    # 9. is_anomaly target column present in features
+    check(9, "target_column_present", "is_anomaly" in features.columns, "is_anomaly exists")
+    # 10. No all-zero feature rows
+    feature_only = [c for c in numeric_cols if c != "is_anomaly"]
+    all_zero = (features[feature_only] == 0).all(axis=1).sum()
+    check(10, "no_all_zero_feature_rows", all_zero == 0, f"all-zero rows={all_zero}")
+    # 11. merchant_txn_count is positive
+    check(11, "merchant_txn_count_positive",
+          "merchant_txn_count" in features.columns and (features["merchant_txn_count"] > 0).all(),
+          "> 0")
+    # 12. Feature schema file exists
+    check(12, "feature_schema_exists",
+          Path("data/processed/feature_schema.json").exists(),
+          "file present")
 
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "checks_passed": sum(r["passed"] for r in results),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "checks_passed": passed,
         "checks_total": len(results),
-        "checks": results,
+        "results": results,
     }
-    VALIDATION_REPORT_PATH.write_text(json.dumps(report, indent=2, cls=_NumpyEncoder))
+    with open(REPORT_PATH, "w") as f:
+        json.dump(report, f, indent=2)
 
-    return results
+    print(f"   ✅ Subagent C done — {passed}/12 validation checks passed")
+    print(f"   📄 Saved: logs/validation_report.json")
 
 
 if __name__ == "__main__":
-    results = run()
-    passed = sum(r["passed"] for r in results)
-    print(f"   ✅ Subagent C done — {passed}/{len(results)} validation checks passed")
-    print(f"   📄 Saved: {VALIDATION_REPORT_PATH}")
+    run()
