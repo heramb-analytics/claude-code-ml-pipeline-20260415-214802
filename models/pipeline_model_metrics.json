@@ -1,5 +1,5 @@
 {
-  "trained_at": "2026-04-15T21:02:00.472920+00:00",
+  "trained_at": "2026-04-16T07:28:21.819966+00:00",
   "algorithm": "IsolationForest",
   "best_params": {
     "n_estimators": 50,
